@@ -1,0 +1,777 @@
+---
+title: "cost of inaction RBD 2023"
+author: "Idrissa Dabo"
+date: "2023-08-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(xlsx)
+library(writexl)
+library(fs)
+library(echarts4r)
+library(expss)
+library(janitor)
+library(haven)
+library(DT)
+```
+
+## Importer les base bénéficiaires et les combiner
+Après avoir chargé plusieurs package de traitement de données et filtré les URT (Unconditional Resource Transfer), la modalité DSC n'apparait plus dans la base.
+
+
+```{r}
+# path_benef <- "C:/Users/USER MSI/Documents/R Project/cost_of_inaction/Data/Beneficiare/"
+# path_exp <- "C:/Users/USER MSI/Documents/R Project/cost_of_inaction/Data/Expenditure//"
+
+
+
+expenditure <- read.csv("Data/Expenditure/last data expenditure 2019 2022.csv")
+expenditure <- expenditure |> filter(
+  Fiscal.Year %in% c(2019:2022) 
+)
+
+# expenditure2 <- subset(expenditure, grep("URT$",x = expenditure$WBS.Element))
+# expenditure2 <- expenditure |>  mutate(
+#   WBS2  = if_else(str_detect(WBS.Element, pattern = "URT") == TRUE,true = "vrai", false = "faux")
+# )
+
+# expenditure2 <- expenditure |> filter(
+#   Modality %in% c("Food Value","Food Transfer Cost","FTC External Transport","Cargo Preference",
+#                   "CBT CV Value","CBT CV Transfer Cost","Implementation","DSC")
+# )
+
+expenditure3 <- expenditure |> select(
+  Country, Fiscal.Year, Modality, Expenditures..USD.
+)
+
+expenditure3 <- expenditure3 |> group_by(
+  Country, Fiscal.Year,Modality,
+) |> summarise(expend = sum(Expenditures..USD.))
+
+expenditure4 <- expenditure3 |> pivot_wider(
+  names_from = Modality, values_from = expend
+)
+
+# calcul total food cost
+expenditure4 <- expenditure4 |> mutate(
+  `Food Value` = case_when(
+    is.na(`Food Value`) ~ 0,
+    TRUE~ `Food Value`
+  ),
+  `Food Transfer Cost` = case_when(
+    is.na(`Food Transfer Cost`) ~ 0,
+    TRUE~ `Food Transfer Cost`
+  ),
+  `FTC External Transport` = case_when(
+    is.na(`FTC External Transport`) ~ 0,
+    TRUE ~ `FTC External Transport`
+  ),
+  `Cargo Preference` = case_when(
+    is.na(`Cargo Preference`) ~ 0,
+    TRUE ~ `Cargo Preference`
+  )
+  
+) |> mutate(
+  total_cost_food = `Food Value` + `Food Transfer Cost` + `FTC External Transport` +`Cargo Preference`)
+
+#remetre les NA
+expenditure4 <- expenditure4 |> mutate(
+  `Food Value` = case_when(
+    `Food Value` == 0 ~ NA,
+    TRUE~ `Food Value`
+  ),
+  `Food Transfer Cost` = case_when(
+    `Food Transfer Cost` == 0 ~ NA,
+    TRUE~ `Food Transfer Cost`
+  ),
+  `FTC External Transport` = case_when(
+    `FTC External Transport` == 0 ~ NA,
+    TRUE ~ `FTC External Transport`
+  ),
+  `Cargo Preference` = case_when(
+    `Cargo Preference` == 0 ~ NA,
+    TRUE ~ `Cargo Preference`
+  )
+  # ,
+  # total_cost_food = case_when(
+  #   total_cost_food == 0 ~ NA,
+  #   TRUE ~ total_cost_food)
+  
+)
+
+expenditure4 <- expenditure4 |> rename(
+  Year = "Fiscal.Year"
+) |> relocate(
+  c(`Food Value`,`Food Transfer Cost`,`Cargo Preference`), .after = `FTC External Transport`
+)
+
+
+expenditure4 <- expenditure4 |> relocate(
+  `FTC External Transport`, .after = `Food Transfer Cost`
+)
+
+# # sommme coste food
+# expenditure4 <- expenditure4 |> mutate(
+#   total_cost_food = sum(`Food Value`,`Food Transfer Cost`,`FTC External Transport`,`Cargo Preference`, na.rm = TRUE) 
+# )
+
+expenditure4 <- expenditure4 |> relocate(
+  total_cost_food, .after = `Cargo Preference`
+)
+
+expenditure4 <- expenditure4 |> relocate(
+  Implementation, .after = `Service Delivery`
+)
+
+expenditure4 <- expenditure4 |> mutate(
+  `CBT CV Value` = case_when(
+    is.na(`CBT CV Value`) ~ 0,
+    TRUE~ `CBT CV Value`
+  ),
+  `CBT CV Transfer Cost` = case_when(
+    is.na(`CBT CV Transfer Cost`) ~ 0,
+    TRUE~ `CBT CV Transfer Cost`
+  )
+  
+) |> mutate(
+  total_cost_CBT = `CBT CV Value` + `CBT CV Transfer Cost` )
+
+expenditure4 <- expenditure4 |> mutate(
+  `CBT CV Value` = case_when(
+    `CBT CV Value` == 0 ~ NA,
+    TRUE~ `CBT CV Value`
+  ),
+  `CBT CV Transfer Cost` = case_when(
+    `CBT CV Transfer Cost` == 0 ~ NA,
+    TRUE ~ `CBT CV Transfer Cost`
+  )
+)
+
+expenditure4 <- expenditure4 |> relocate(
+  `CBT CV Value`, .before = `CBT CV Transfer Cost`
+)
+
+expenditure4 <- expenditure4 |> mutate(
+  all_modalities_cost = total_cost_food + total_cost_CBT
+) |> relocate(all_modalities_cost, .before = Implementation)
+
+expenditure4 <- expenditure4 |> mutate(
+  food_cost_percent = round((total_cost_food/all_modalities_cost),3),
+  CBT_cost_percent = round((total_cost_CBT/all_modalities_cost),3)
+) |> relocate(
+  food_cost_percent, .after = total_cost_food
+) |> relocate(
+  CBT_cost_percent, .after = total_cost_CBT
+)
+
+expenditure4 <- expenditure4 |> mutate(
+  Implementation_food =  food_cost_percent * Implementation,
+  Implementation_CBT = CBT_cost_percent * Implementation
+) |> relocate(
+  c(Implementation_food,Implementation_CBT), .after = Implementation
+)
+
+# cost food et cbt + implementation food et cbt
+expenditure4 <- expenditure4 |> mutate(
+  total_cost_implementation_food = total_cost_food + Implementation_food,
+  total_cost_implementation_CBT = total_cost_CBT + Implementation_CBT
+)
+
+# ISC food et cbt
+expenditure4 <- expenditure4 |> mutate(
+  isc_food = total_cost_implementation_food*0.065,
+  isc_CBT = total_cost_implementation_CBT*0.065
+)
+
+# total cost + ISC 
+expenditure4 <- expenditure4 |> mutate(
+  total_cost_final_food = total_cost_implementation_food + isc_food,
+  total_cost_final_CBT = total_cost_implementation_CBT + isc_CBT
+)
+
+```
+
+## classement par côte
+
+```{r}
+group_country <- data.frame(
+  stringsAsFactors = FALSE,
+                              Country = c("Benin","Burkina Faso","Cameroon",
+                                        "Cape Verde","Central African Republic","Chad",
+                                        "Cote d'Ivoire","Gambia","Ghana",
+                                        "Guinea","Guinea-Bissau","Liberia",
+                                        "Mali","Mauritania","Niger","Nigeria",
+                                        "Sao Tome and Principe","Senegal",
+                                        "Sierra Leone","Togo"),
+                           Group  = c("Coastal","Sahel","CAR/CMR/NGA","Coastal",
+                                        "CAR/CMR/NGA","Sahel","Coastal",
+                                        "Coastal","Coastal","Coastal","Coastal",
+                                        "Coastal","Sahel","Sahel","Sahel",
+                                        "CAR/CMR/NGA","Coastal","Coastal",
+                                        "Coastal","Coastal")
+                 )
+```
+
+
+
+## traitement de la base beneficiary
+
+
+```{r }
+
+beneficiaire <- read.xlsx("Data/Beneficiare/New_data_benef_06_07_2023.xlsx",sheetName = 1)
+
+# beneficiaire_urt <- beneficiaire |> filter(
+#   Programme.Area == "Unconditional Resource Transfers"
+# )
+
+# renommer les variables de beneficiaires
+beneficiaire_urt <- beneficiaire |> rename(
+  benef_food = Actual.Food.,
+  benef_CBT = Actual.CBT.,
+  total_beneficiaries = Actual.Total.
+)
+
+# beneficiaire_urt <- beneficiaire_urt |> select(
+#   Country, Year,Activity.Category,benef_food,benef_CBT, total_beneficiaries
+# )
+
+beneficiaire_urt |> group_by(
+  Year
+) |> summarise(sum(benef_food, na.rm = TRUE))
+
+
+```
+
+## Commodity
+
+
+```{r}
+commodities <- read.xlsx("Data/Expenditure/commodity last.xlsx",sheetName = 1)
+# regrouper par commodité
+commodities2 <- commodities |> dplyr::group_by(
+  Country_Name, Group, Document_Year,Commodity_Name
+) |> summarise(
+  Tot_qtityMT = sum(SUM_of_Distributed_Quantity_MT, na.rm = TRUE),
+  # Cmdty_Price_USD = mean(Cmdty_Price_USD, na.rm=TRUE),
+  Tot_Value_distributed = sum(SUM_of_Cmdty_value_distributed, na.rm = TRUE)
+)
+# importer la base dans laquelle nutval pour avoir les équivalents Kcal
+equivalent <- read.xlsx("Data/Equivalent/equivalent.xlsx", sheetName = 1)
+nutriton <- read.xlsx("Nutrition/nutrition.xlsx",sheetName = 1)
+
+
+commodities3 <- commodities2 |> mutate(
+  var_equivalent = vlookup(lookup_column = "Commodity_Name",dict = equivalent,result_column = "equivalent",lookup_value = Commodity_Name )
+) |> mutate(
+  kcal = vlookup(lookup_column = "Food.Commodities.and.Products",dict = nutriton,result_column = "kcal",lookup_value = var_equivalent )
+)
+
+commodities3 <- commodities3 |> 
+  rename(
+    Country = Country_Name,
+    Year = Document_Year
+  )
+
+```
+
+## FCS
+importer la base sur la consommation alimentaire
+
+```{r}
+fcs <- read.xlsx("Data/Beneficiare/FCS Acceptable.xlsx",sheetName = 1)
+fcs <- fcs |> select(Country, everything())
+fcs <- fcs |> mutate(
+  # FCS_acceptable = round(Acceptable.FCS,2)
+   FCS_poor_borderline = round((100 - Acceptable.FCS),2)
+)  |> select(-Acceptable.FCS)
+
+fcs$Year <- as.numeric(fcs$Year)
+
+```
+
+## Assistance days
+Importer la base assistance afin de faire les calculs des indicateurs. Pour ce qui est de l'assistance days il s'agira d'importer les deux bases
+```{r}
+
+## Assistance days
+assistance_food <- read.xlsx("Data/assistance/Assistance_days (2).xlsx",sheetName = 1)
+assistance_cash <- read.xlsx("Data/assistance/Assistance_days (2).xlsx",sheetName = 2)
+
+assistance_cash$Year <- as.numeric(assistance_cash$Year)
+# assistance <- read.xlsx("Data/assistance/assistance days.xlsx", sheetName = 1)
+# assistance <- assistance |> pivot_longer(
+#   cols = 3:6,names_to = "Year"
+# )
+# 
+# assistance <- assistance |> mutate(
+#   Year = case_when(
+#     Year == "X2022" ~ "2022",
+#     Year == "X2021" ~ "2021",
+#     Year == "X2020" ~ "2020",
+#     Year == "X2019" ~ "2019",
+#     TRUE ~ Year
+#   )
+# )
+# 
+# assistance$Year <- as.numeric(assistance$Year)
+# 
+# assistance <- assistance |> rename(
+#    assistance_days = value
+# )
+# 
+# assistance <- assistance |> relocate(
+#   Country, .before = Group
+# )
+# benef_exp_commo_days <- benef_expe_commo |> left_join(
+#   assistance, by = c("Country","Group","Year")
+# )
+
+
+
+# benef_exp_commo_days_FCS_kcal <- benef_exp_commo_days_FCS |> rename(
+#   assistance_days_food = assistance_days
+# ) |>   mutate(
+#   total_cost_ISC_food = (sum(total_cost_food,Implementation_food,na.rm = TRUE))*1.065,
+#   total_cost_ISC_CBT = (sum(total_cost_CBT,Implementation_CBT, na.rm = TRUE))*1.065
+# ) |> relocate(
+#   total_cost_ISC_food, .after = total_cost_food
+# ) |> relocate(
+#   total_cost_ISC_CBT, .after = total_cost_CBT
+# )
+# 
+# # Cost per beneficiarie
+# benef_exp_commo_days_FCS_kcal_CpB <- benef_exp_commo_days_FCS_kcal |> mutate(
+#   daily_CpB_cost_food = benef_food + assistance_days_food
+# )
+
+```
+
+
+
+## Jointure
+Dans cette partie il s'agira de joindre les bases bénéficiaires, expenditures, commodité et fcs
+
+```{r}
+
+beneficiaire_urt$Year <- as.numeric(beneficiaire_urt$Year)
+# jointure beneficaire et expenditure
+benef_expend <- beneficiaire_urt  |> left_join(
+  expenditure4, by = c("Country","Year")
+)
+
+benef_expend2 <- benef_expend |> mutate(
+  Group = maditr::vlookup(lookup_column = "Country",dict = group_country,result_column = "Group",lookup_value = Country
+                    )
+)
+
+benef_expend2 <- benef_expend2 |> relocate(
+  Group, .after = "Country"
+)
+
+## Jointure assistance
+# assistance_dataset <- assistance_food |> left_join(
+#   assistance_cash , by = c("Country","Group","Year")
+# )
+
+#différence entre les deux datasests
+setdiff(unique(commodities3$Country), unique(benef_expend2$Country))
+setdiff(unique(benef_expend2$Country),unique(commodities3$Country))
+
+setdiff(unique(assistance_dataset$Country), unique(benef_expend2$Country))
+setdiff(unique(benef_expend2$Country),unique(assistance_dataset$Country))
+
+setdiff(unique(commodities3$Country), unique(benef_expend_assist_fcs$Country))
+setdiff(unique(benef_expend_assist_fcs$Country),unique(commodities3$Country))
+
+# benef_expend_assist <- benef_expend2 |> left_join(
+#   assistance_dataset, by = c("Country","Group","Year")
+# )
+
+benef_expend_assist <- benef_expend2 |> left_join(
+  assistance_food, by = c("Country","Group","Year")
+)
+
+benef_expend_assist <- benef_expend_assist |> left_join(
+  assistance_cash, by = c("Country","Group","Year")
+)
+
+benef_expend_assist_fcs <- benef_expend_assist |> left_join(
+  fcs, by = c("Country","Group","Year")
+)
+
+all_country <- unique(benef_expend2$Country)
+missing_in_commodities3 <- c("Central African Republic","Senegal","Guinea-Bissau","Liberia",
+                             "Ghana")
+
+country_in_commodities3 <- all_country[!(all_country %in% missing_in_commodities3)]
+
+benef_expend_assist_fcs2 <- benef_expend_assist_fcs |> filter(
+  Country %in% country_in_commodities3
+)
+
+benef_expend_assist_fcs3 <- benef_expend_assist_fcs |> filter(
+  Country %in% missing_in_commodities3
+)
+
+#Jointure commodities et autres bases
+commo_benef_exp_days_FCS <- commodities3 |> left_join(
+  benef_expend_assist_fcs2, by = c("Country","Group","Year")
+)
+
+# ajouter les pays manquants à la base
+setdiff(names(commo_benef_exp_days_FCS), names(benef_expend_assist_fcs3))
+
+benef_expend_assist_fcs3 <- benef_expend_assist_fcs3 |> mutate(
+  Commodity_Name = NA,Tot_qtityMT = NA,Tot_Value_distributed = NA,var_equivalent = NA,
+  kcal = NA
+)
+
+commo_benef_exp_days_FCS <- commo_benef_exp_days_FCS |> bind_rows(
+  benef_expend_assist_fcs3
+)
+
+# # jointure beneficaire, expenditure et commodité 
+# benef_expe_commo <- commodities3 |> left_join(
+#   benef_expend3, by = c("Country","Group","Year")
+# )
+# # Jointure beneficaire, expenditure, commodité et fcs
+# benef_exp_commo_days_FCS <- benef_expe_commo |> left_join(
+#   fcs, by = c("Country","Group","Year")
+# )
+
+commo_benef_exp_days_FCS <- commo_benef_exp_days_FCS |> mutate(
+  total_kcal = round(Tot_qtityMT * 10000 * kcal,2)
+)
+
+commo_benef_exp_days_FCS <- commo_benef_exp_days_FCS |> relocate(
+  total_kcal, .after = Tot_qtityMT
+)
+
+# jointure beneficaire, expenditure , commodité et Assistance food
+# benef_exp_commo_days_FCS_asis_food <- benef_exp_commo_days_FCS |> left_join(
+#   assistance_food, by = c("Country","Group","Year"))
+# # jointure beneficaire, expenditure , commodité et Assistance cash
+# benef_exp_commo_days_FCS_asis_food_cbt <- benef_exp_commo_days_FCS_asis_food |> left_join(
+#   assistance_cash, by = c("Country","Group","Year"))
+# jointure avec ration data
+commo_benef_exp_days_FCS_ration <- commo_benef_exp_days_FCS |> left_join(
+  ration_data, by = c("Country","Year")
+)
+
+```
+
+## calculation
+```{r}
+#daily cost per beneficiary food
+final_dataset_COI <- commo_benef_exp_days_FCS_ration |> mutate(
+  daily_CpB_food = round(total_cost_final_food/(benef_food*assistance_days_food_2),2)
+)
+
+# final_dataset_COI <- commo_benef_exp_days_FCS_ration |> mutate(
+#   daily_CpB_food2 = round(Tot_Value_distributed/(benef_food*assistance_days_food_2),2)
+# )
+
+
+final_dataset_COI <- final_dataset_COI |> mutate(
+  daily_CpB_CBT = round(total_cost_final_CBT/(benef_CBT*assistance_days_CBT_2),2)
+)
+
+# CpB food pour benefeciary total from commodity data
+final_dataset_COI <- final_dataset_COI |> mutate(
+  daily_CpB_food_benef = round(Tot_Value_distributed/(benef_food*assistance_days_food_2),2)
+)
+
+# final_dataset_COI <- commo_benef_exp_days_FCS_ration |> mutate(
+#   daily_CpB_food2 = round(Tot_Value_distributed/(benef_food*assistance_days_food_2),2)
+# )
+
+
+final_dataset_COI <- final_dataset_COI |> mutate(
+  daily_CpB_CBT_benef = round(`CBT CV Value`/(benef_CBT*assistance_days_CBT_2),2)
+)
+
+final_dataset_COI <- final_dataset_COI |> mutate(
+  total_cost_final_food = case_when(
+    is.na(total_cost_final_food) ~ 0,
+    TRUE~ total_cost_final_food
+  ),
+  total_cost_final_CBT = case_when(
+    is.na(total_cost_final_CBT) ~ 0,
+    TRUE~ total_cost_final_CBT
+  )
+)
+
+final_dataset_COI <- final_dataset_COI |> mutate(
+  total_beneficiaries = case_when(
+    is.na(total_beneficiaries) ~ 0,
+    TRUE~ total_beneficiaries
+  )
+)
+
+final_dataset_COI <- final_dataset_COI |> mutate(
+  assistance_days_food_2 = case_when(
+    is.na(assistance_days_food_2) ~ 0,
+    TRUE~ assistance_days_food_2
+  ),
+  assistance_days_CBT_2 = case_when(
+    is.na(assistance_days_CBT_2) ~ 0,
+    TRUE~ assistance_days_CBT_2
+  )
+)
+
+
+# final_dataset_COI <- final_dataset_COI |> mutate(
+#   total_cost_final = total_cost_final_food + total_cost_final_CBT
+#   # assistance_days_final = mean(assistance_days_food_2,assistance_days_CBT_2,na.rm = TRUE)
+# ) 
+# 
+# final_dataset_COI <- final_dataset_COI |> mutate(
+#   assistance_days_final = mean(assistance_days_food_2,assistance_days_CBT_2)
+# )
+  
+# final_data <- final_dataset_COI |>dplyr::group_by(Country, Year) |> 
+#   summarise(daily_cOI_food = mean(daily_cOI_food)) |> pivot_wider(
+#     names_from = Year, values_from = daily_cOI_food
+#   )
+
+
+```
+
+##  Tabulation
+```{r}
+pays <- unique(final_dataset_COI$Country)
+exclude_elements <- c("Sao Tome and Principe","Senegal","Guinea-Bissau","Ghana",
+                      "Senegal")
+
+pays <- pays[!(pays %in% exclude_elements)]
+
+cpb_food <- final_dataset_COI |> filter(Country %in% pays)  |>dplyr::group_by(Country, Year) |> 
+  summarise(daily_CpB_food = mean(daily_CpB_food)) |> pivot_wider(
+    names_from = Year, values_from = daily_CpB_food
+  ) |> mutate(
+    assistance = "food"
+  ) |> select(Country, assistance, 5, everything())
+#cpb by year
+cpb_food_year <- final_dataset_COI  |>dplyr::group_by( Year) |> 
+  summarise(daily_CpB_food = mean(daily_CpB_food, na.rm= TRUE)) 
+cpb_food <- cpb_food[-9,]
+  
+colMeans(cpb_food[,3:6], na.rm = TRUE)
+
+cpb_CBT_year <- final_dataset_COI |> dplyr::group_by( Year) |>   summarise(daily_CpB_CBT = mean(daily_CpB_CBT, na.rm= TRUE))  
+
+cpb_cbt <- final_dataset_COI |> filter(Country %in% pays) |>dplyr::group_by(Country, Year) |> 
+  summarise(daily_CpB_CBT = mean(daily_CpB_CBT)) |> pivot_wider(
+    names_from = Year, values_from = daily_CpB_CBT
+  ) |>  mutate(
+    assistance = "CBT"
+  ) |> select(Country, assistance, 5, everything())
+
+
+cpb_cbt <- cpb_cbt[-c(9,15),]
+
+##### cpb food benef ######################
+cpb_food_benef <- final_dataset_COI |> filter(Country %in% pays)  |>dplyr::group_by(Country, Year) |> 
+  summarise(daily_CpB_food_benef = mean(daily_CpB_food_benef)) |> pivot_wider(
+    names_from = Year, values_from = daily_CpB_food_benef
+  ) |> mutate(
+    assistance = "food"
+  ) |> select(Country, assistance, 5, everything())
+#cpb by year
+# cpb_food_year <- final_dataset_COI  |>dplyr::group_by( Year) |> 
+#   summarise(daily_CpB_food = mean(daily_CpB_food, na.rm= TRUE)) 
+cpb_food_benef <- cpb_food_benef[-c(4,9),]
+  
+colMeans(cpb_food_benef[,3:6], na.rm = TRUE)
+
+# cpb_CBT_year <- final_dataset_COI |> dplyr::group_by( Year) |>   summarise(daily_CpB_CBT = mean(daily_CpB_CBT, na.rm= TRUE))  
+
+cpb_cbt_benef <- final_dataset_COI |> filter(Country %in% pays) |>dplyr::group_by(Country, Year) |> 
+  summarise(daily_CpB_CBT_benef = mean(daily_CpB_CBT_benef)) |> pivot_wider(
+    names_from = Year, values_from = daily_CpB_CBT_benef
+  ) |>  mutate(
+    assistance = "CBT"
+  ) |> select(Country, assistance, 5, everything())
+
+
+cpb_cbt_benef <- cpb_cbt_benef[-c(8,9,15),]
+
+colMeans(cpb_cbt_benef[,3:6], na.rm = TRUE)
+
+
+###########################################################################
+
+colMeans(cpb_cbt[,3:6], na.rm = TRUE)
+#enlever togo car pas de données cbt
+
+## ration size by year
+ration_by_year <- final_dataset_COI |> filter(Country %in% pays) |>dplyr::group_by( Year) |> 
+  summarise(ration_size_Kcal = mean(ration_size_Kcal, na.rm = TRUE))
+  
+
+
+## Ration size Gap
+ration_size_gap <- ration_data |> mutate(
+  ration_size_percent = round(ration_size_Kcal/2100,2)
+) |> mutate( ration_size_gap = 1-ration_size_percent)
+
+# cpb versus ration
+cpb_food_2022 <- cpb_food |> select(
+ c(1,4)
+)
+colnames(cpb_food_2022)[2] <- "cpb_food"
+
+# jointure cpb_food and ration
+cpb_ration_food <- cpb_food_2022 |> left_join(
+  ration_size_gap, by = "Country"
+)
+# calcul cbp full ration
+cpb_ration_food <- cpb_ration_food |> mutate(
+  cpb_full_ration_food =  round((2100*cpb_food)/ration_size_Kcal,2)
+)
+
+cpb_food <- cpb_food |> mutate(
+  assistance = "food"
+)
+
+cpb_cbt <- cpb_food |> mutate(
+  assistance = "CBT"
+)
+
+cpb_food_cbt <- cpb_food |> bind_rows(cpb_cbt) |> 
+  arrange(Country) |> select(
+    c(1,6,5,everything())
+  )
+
+## value of assistance kcal
+final_dataset_COI <- final_dataset_COI |> mutate(
+  value_assistance_food = round(total_kcal/(benef_food*assistance_days_food_2),2)
+)
+## value of assistance usd
+final_dataset_COI <- final_dataset_COI |> mutate(
+  value_assistance_food_usd = round(Tot_Value_distributed/(benef_food*assistance_days_food_2),2)
+)
+
+final_dataset_COI <- final_dataset_COI |> mutate(
+  value_assistance_CBT = round(`CBT CV Value`/(benef_CBT*assistance_days_CBT_2),2)
+)
+## Value assistance food
+value_assistance_food <- final_dataset_COI |> dplyr::group_by(
+  Country, Year
+) |> summarise(value_assistance_food = sum( value_assistance_food, na.rm = TRUE))
+
+## Value assistance USD
+value_assistance_food_usd <- final_dataset_COI |> dplyr::group_by(
+  Country, Year
+) |> summarise(value_assistance_food_usd = sum( value_assistance_food_usd))
+
+value_assistance_food_year <- final_dataset_COI |> dplyr::group_by(
+  Year
+) |> summarise(value_assistance_food_year = sum( value_assistance_food_usd))
+
+
+
+
+
+value_assistance_food <- value_assistance_food |> pivot_wider(names_from = Year,values_from = value_assistance_food )
+value_assistance_food <- value_assistance_food[-c(4,8,10,11,17),]
+value_assistance_food <- value_assistance_food |> select(
+  c(1,5),everything()
+)
+
+value_assistance_food[7,2] <- NA
+value_assistance_food[7,3] <- NA
+value_assistance_food[12,3] <- NA
+value_assistance_food[12,4] <- NA
+
+colMeans(value_assistance_food[,2:5], na.rm = TRUE)
+
+value_assistance_food_usd <- value_assistance_food_usd |> pivot_wider(names_from = Year,values_from = value_assistance_food_usd                                                  )
+
+
+
+value_assistance_food_year <- colMeans(value_assistance_food[,2:5],na.rm = TRUE)
+## Value assistance cbt
+# value_assistance_CBT <- final_dataset_COI |> dplyr::group_by(
+#   Country, Year
+# ) |> summarise(value_assistance_CBT = sum(value_assistance_CBT))
+# 
+# value_assistance_CBT <- value_assistance_CBT |> pivot_wider(names_from = Year,values_from = value_assistance_CBT                                                  )
+# 
+# value_assistance_CBT <- value_assistance_CBT |> select(
+#   c(1,5),everything()
+# )
+# 
+# 
+# value_assistance_food_year <- value_assistance_food |> filter(
+#   Country %in% pays)
+
+# value_assistance_food_year <- value_assistance_food_year[-c(4,9),]
+```
+
+
+## Sénario
+```{r}
+# Sénario 1
+totalcost1 <- 2300000000
+assistance_days_simulated1 <- 365
+cbp_food_2022 <- 0.3321429
+value_assistance_food_year_2022 <- 835.8446
+cpb_full_simulated <- function(x){
+   (x*cbp_food_2022)/value_assistance_food_year_2022
+}
+
+cpb_full_ration <- cpb_full_simulated(2100)
+# cpb_full_ration = 0.9183082
+
+
+benef_simulated1 = round(totalcost1/(assistance_days_simulated1*cpb_full_simulated(2100)))
+
+
+# Estimation of total cost
+benef_simulated1 <- 43000000
+assistance_days_simulated1 <- 365
+cbp_food_2022 <- 0.43
+value_assistance_food_year_2022 <- 951.8742 
+cpb_full_simulated <- function(x){
+   (x*cbp_food_2022)/value_assistance_food_year_2022
+}
+
+cpb_full_ration <- cpb_full_simulated(2100)
+
+totalcost_simulated = round(benef_simulated1*(assistance_days_simulated1*cpb_full_simulated(2100)))
+
+
+```
+
+
+## Exportation
+
+```{r}
+
+
+write_xlsx(final_dataset_COI,"output/final_data_COI.xlsx")
+write_xlsx(coi_tab,"output/final_data.xlsx")
+write_xlsx(coi_tab_cbt,"output/final_data_cbt.xlsx")
+write_xlsx(ration_size_gap,"output/ration_size_gap.xlsx")
+write_xlsx(cpb_ration_food,"output/cpb_ration_food.xlsx")
+write_xlsx(cpb_food,"output/cpb_food.xlsx")
+write_xlsx(cpb_cbt,"output/cpb_cbt.xlsx")
+write_xlsx(cpb_food_cbt,"output/cpb_food_cbt.xlsx")
+write_xlsx(value_assistance_food,"output/value_assistance_food.xlsx")
+write_xlsx(cpb_food_year,"output/cpb_food_year.xlsx")
+write_xlsx(cpb_food_year,"output/cpb_food_year.xlsx")
+write_xlsx(cpb_CBT_year,"output/cpb_CBT_year.xlsx")
+assistance_par_an
+write_xlsx(assistance_par_an,"output/assistance_par_an.xlsx")
+
+write_xlsx(cpb_food_benef,"output/cpb_food_benef.xlsx")
+write_xlsx(cpb_cbt_benef,"output/cpb_cbt_benef.xlsx")
+
+
+```
+
